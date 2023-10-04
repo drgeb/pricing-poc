@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+#================================================================
+# HEADER
+#================================================================
+#% SYNOPSIS
+#+    ${SCRIPT_NAME} [-hv] [-o[file]] args ...
+#%
+#% DESCRIPTION
+#%    This is a wrapper script around newrelic API and newrelic cli commands to perform of the basic tasks.
+#%    The script just serves as an example of some activities that can be performed by the cli.
+#%    At the moment this is mainly management of deployment markers for our applications/services.
+#%
+#% OPTIONS
+#%    -o [file], --output=[file]    Set log file (default=/dev/null)
+#%                                  use DEFAULT keyword to autoname file
+#%                                  The default value is /dev/null.
+#%    -t, --timelog                 Add timestamp to log ("+%y/%m/%d@%H:%M:%S")
+#%    -x, --ignorelock              Ignore if lock file exists
+#%    -h, --help                    Print this help
+#%    -v, --version                 Print script information
+#%
+#% EXAMPLES
+#%    ${SCRIPT_NAME} -o DEFAULT <commands>
+#%
+#%    commands:
+#%      getApplicationID    - get application id by name
+#%
+#%    ** Please export the values for the required environment variables.
+#================================================================
+#- IMPLEMENTATION
+#-    version         ${SCRIPT_NAME} 1.0.0
+#-    author          Gerald Bennett
+#-    license         CC-BY-SA Creative Commons License
+#-    script_id       1
+#-
+#================================================================
+#  DEBUG OPTION
+#    set -n  # Uncomment to check your syntax, without execution.
+#    set -x  # Uncomment to debug this shell script
+#
+#================================================================
+# END_OF_HEADER
+#================================================================
+
+# set -e
+# set -o pipefail
+
+  #== usage functions ==#
+usage() { printf "Usage:"; scriptinfo usg ; }
+usagefull() {
+  scriptinfo ful ;
+}
+
+scriptinfo() {
+  headFilter="^#-"
+	[[ "$1" == "usg" ]] && headFilter="^#+"
+	[[ "$1" == "ful" ]] && headFilter="^#[%+]"
+	[[ "$1" == "ver" ]] && headFilter="^#-"
+	head -"${SCRIPT_HEADSIZE:-99}" "${0}" | grep -e "${headFilter}" | sed -e "s/${headFilter}//g" -e "s/\${SCRIPT_NAME}/${SCRIPT_NAME}/g";
+}
+
+#================================================================
+#  FILES AND VARIABLES
+#================================================================
+
+  #== general variables ==#
+SCRIPT_NAME="$(basename "${0}")" # scriptname without path
+SCRIPT_DIR="$( cd "$(dirname "$0")" && pwd )" # script directory
+SCRIPT_FULLPATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
+
+SCRIPT_ID="$(scriptinfo ver | grep script_id | tr -s ' ' | cut -d' ' -f3)"
+SCRIPT_HEADSIZE=$(grep -sn "^# END_OF_HEADER" "${0}" | head -1 | cut -f1 -d:)
+
+SCRIPT_UNIQ="${SCRIPT_NAME%.*}.${SCRIPT_ID}.${HOSTNAME%%.*}"
+SCRIPT_UNIQ_DATED="${SCRIPT_UNIQ}.$(date "+%y%m%d%H%M%S").${$}"
+
+SCRIPT_DIR_TEMP="/tmp" # Make sure temporary folder is RW
+SCRIPT_DIR_LOCK="${SCRIPT_DIR_TEMP}/${SCRIPT_UNIQ}.lock"
+
+APP_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+
+LOG_FILE="/tmp/$(basename "$0").log"
+
+WILDCARD_DNS='traefik.me'
+INGRESS_HOST='127.0.0.1'
+
+readonly LOG_FILE
+info()    { echo "[INFO]    $*" | tee -a "$LOG_FILE" >&2 ; }
+warning() { echo "[WARNING] $*" | tee -a "$LOG_FILE" >&2 ; }
+error()   { echo "[ERROR]   $*" | tee -a "$LOG_FILE" >&2 ; }
+fatal()   { echo "[FATAL]   $*" | tee -a "$LOG_FILE" >&2 ; exit 1 ; }
+
+#================================================================
+COMMAND=${COMMAND:-$1}
+
+if [ -z "$COMMAND" ]; then
+  COMMAND=usage
+fi
+
+cleanup() {
+  trap - SIGINT SIGTERM ERR EXIT
+  # script cleanup here
+}
+
+setup_colors() {
+  if [[ -t 2 ]] && [[ -z "${NO_COLOR-}" ]] && [[ "${TERM-}" != "dumb" ]]; then
+    NOFORMAT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' ORANGE='\033[0;33m' BLUE='\033[0;34m' PURPLE='\033[0;35m' CYAN='\033[0;36m' YELLOW='\033[1;33m'
+  else
+    NOFORMAT='' RED='' GREEN='' ORANGE='' BLUE='' PURPLE='' CYAN='' YELLOW=''
+  fi
+}
+
+msg() {
+  echo >&2 -e "${1-}"
+}
+
+die() {
+  local msg=$1
+  local code=${2-1} # default exit status 1
+  msg "$msg"
+  exit "$code"
+}
+
+parse_params() {
+  # default values of variables set from params
+  flag=0
+  param=''
+
+  while :; do
+    case "${1-}" in
+    -h | --help) usage ;;
+    -v | --verbose) set -x ;;
+    --no-color) NO_COLOR=1 ;;
+    -f | --flag) flag=1 ;; # example flag
+    -p | --param) # example named parameter
+      param="${2-}"
+      shift
+      ;;
+    -?*) die "Unknown option: $1" ;;
+    *) break ;;
+    esac
+    shift
+  done
+
+  args=("$@")
+
+  # check required params and arguments
+  [[ -z "${param-}" ]] && die "Missing required parameter: param"
+  [[ ${#args[@]} -eq 0 ]] && die "Missing script arguments"
+
+  return 0
+}
+
+# parse_params "$@"
+setup_colors
+#
+
+surrealdbEnv() {
+    export NAMESPACE=surrealdb
+    export SUREALDB_USER=admin
+    export SUREALDB_PASSWORD=SurealDB12345
+    # Set your registry URL and credentials
+    export REGISTRY_URL=surrealdb.${INGRESS_HOST}.${WILDCARD_DNS}
+
+    export CA_KEY=surrealdb.key
+    export CA_CRT=surrealdb.crt
+    export YOURDOMAIN_COM_KEY=surrealdb.${WILDCARD_DNS}.key
+    export YOURDOMAIN_COM_CSR=surrealdb.${WILDCARD_DNS}.csr
+    export YOURDOMAIN_COM_CRT=surrealdb.${WILDCARD_DNS}.crt
+    export SECRET_NAME=surrealdb-registry-key
+}
+
+surrealdbGenerateACertificateAuthority() {
+    surrealdbEnv
+    if [ ! -d ${APP_HOME}/docker/data ]; then
+        mkdir -pv ${APP_HOME}/docker/data
+    fi
+    cd ${APP_HOME}/docker/data
+
+    # DOCUMENTATION: https://gosurrealdb.io/docs/2.4.0/install-config/configure-https/
+    # 1. Generate a CA certificate private key.
+    openssl genrsa -out ${CA_KEY} 4096
+
+    # 2. Generate the CA certificate.
+    openssl req -x509 -new -nodes -sha512 -days 3650 \
+     -subj "/C=US/ST=Texas/L=Austin/O=example/OU=Personal/CN=surrealdb.taerfik.me" \
+    -key ${CA_KEY} \
+    -out ${CA_CRT}
+}
+
+surrealdbGenerateAServerCertificate() {
+    surrealdbEnv
+    if [ ! -d ${APP_HOME}/docker/data ]; then
+        mkdir -pv ${APP_HOME}/docker/data
+    fi
+    cd ${APP_HOME}/docker/data
+
+    # The certificate usually contains a .crt file and a .key file, for example, ${YOURDOMAIN_COM_CRT} and surrealdb.taerfik.me.key.
+    #
+    # Generate a private key.
+
+    openssl genrsa -out ${YOURDOMAIN_COM_KEY} 4096
+
+    # Generate a certificate signing request (CSR).
+
+    # Adapt the values in the -subj option to reflect your organization. If you use an FQDN to connect your SurealDB host, you must specify it as the common name (CN) attribute and use it in the key and CSR filenames.
+
+    openssl req -sha512 -new \
+    -subj "/C=US/ST=Texas/L=Austin/O=example/OU=Personal/CN=surrealdb.taerfik.me" \
+    -key ${YOURDOMAIN_COM_KEY} \
+    -out ${YOURDOMAIN_COM_CSR}
+
+    # Generate an x509 v3 extension file.
+
+    # Regardless of whether you’re using either an FQDN or an IP address to connect to your SurealDB host, you must create this file so that you can generate a certificate for your SurealDB host that complies with the Subject Alternative Name (SAN) and x509 v3 extension requirements. Replace the DNS entries to reflect your domain.
+
+cat > v3.ext <<-EOF
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1=surrealdb.taerfik.me
+DNS.2=taerfok.me
+DNS.3=surrealdb
+EOF
+
+    # Use the v3.ext file to generate a certificate for your SurealDB host.
+    #
+    # Replace the surrealdb.taerfik.me in the CRS and CRT file names with the SurealDB host name.
+
+    openssl x509 -req -sha512 -days 3650 \
+        -extfile v3.ext \
+        -CA ${CA_CRT} -CAkey ${CA_KEY} -CAcreateserial \
+        -in ${YOURDOMAIN_COM_CSR} \
+        -out ${YOURDOMAIN_COM_CRT}
+}
+
+kubectlCreateSurealDBTLSSecret() {
+    surrealdbEnv
+    kubectl create secret tls surrealdb-secret \
+        --namespace surrealdb \
+        --cert=${APP_HOME}/docker/data/${YOURDOMAIN_COM_CRT} \
+        --key=${APP_HOME}/docker/data/${YOURDOMAIN_COM_KEY}
+}
+
+dockerComposeUp() {
+    cd ${APP_HOME}/docker
+    docker-compose -f ${APP_HOME}/docker/docker-compose.yml up -d
+}
+
+dockerComposeDown() {
+    docker-compose -f ${APP_HOME}/docker/docker-compose.yml down
+}
+
+function mvnCleanTest() {
+    mvn clean test
+}
+
+test() {
+    # surrealdbGenerateACertificateAuthority
+    # dockerComposeUp
+    mvnCleanTest
+}
+
+case ${COMMAND} in
+    usage)
+        usagefull
+        ;;
+    surrealdbGenerateACertificateAuthority)
+        surrealdbGenerateACertificateAuthority
+        ;;
+    surrealdbGenerateAServerCertificate)
+        surrealdbGenerateAServerCertificate
+        ;;
+    dockerComposeUp)
+        dockerComposeUp
+        ;;
+    dockerComposeDown)
+        dockerComposeDown
+        ;;
+    mvnCleanTest)
+        mvnCleanTest
+        ;;
+    test)
+        test
+        ;;
+      *)
+    usagefull
+      ;;
+esac

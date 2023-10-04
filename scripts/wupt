@@ -1,0 +1,41 @@
+#!/usr/bin/env sh
+
+############################################################
+# Attempt to set APP_HOME
+# Resolve links:  may be a link
+PRG="$0"
+# Need this for relative symlinks.
+while [ -h "PRG" ] ; do
+    ls=`ls -ld "$PRG"`
+    link=`expr "$ls" : '.*-> .*$'`
+    if expr "$link" : /.* > /dev/null; then
+        PRG="$link"
+    else
+        PRG=`dirname "$PRG"`"/$link"
+    fi
+done
+SAVED="`pwd`"
+cd "`dirname "$PRG"`/.." >/dev/null
+APP_HOME="`pwd -P`"
+cd "$SAVED" >/dev/null
+
+APP_NAME="western-union-pricing-test"
+APP_BASE_NAME=`basename "$0"`
+
+############################################################
+
+function test() {
+    mvn clean test
+}
+
+function createCRT() {
+    ############################################################
+    HOSTNAME=surrealdb.127.0.0.1.traefik.me
+    CERT_FILE=web.crt
+    CERT_KEY=web.key
+
+    # Download the certificate
+    openssl s_client -showcerts -connect ${HOSTNAME}:443 </dev/null 2>/dev/null | openssl x509 -outform PEM > ${APP_HOME}/docker/data/${CERT_FILE}
+}
+createCRT
+

@@ -1,0 +1,12 @@
+version: "3"
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb
+    restart: always
+    command: start --user admin --pass Surreal12345 --web-crt /data/surrealdb.crt --web-key /data/surrealdb.key file:/data/database.db
+    ports:
+      - 443:8000
+    volumes:
+      - ./data:/data
