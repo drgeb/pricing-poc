@@ -38,3 +38,7 @@ Western Union:
         Bank account 	2.99
         Debit card 	3.99
         Credit card† 	3.99
+
+
+[Serverless Architecture for a Web Scraping Solution](https://aws.amazon.com/blogs/architecture/serverless-architecture-for-a-web-scraping-solution/)
+
